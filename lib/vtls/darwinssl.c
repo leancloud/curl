@@ -1950,10 +1950,145 @@ darwinssl_connect_step2(struct connectdata *conn, int sockindex)
   }
 }
 
+static bool
+match_key_pair(SecKeyRef serverSecKey,
+               SecKeyRef pinnedSecKey)
+{
+  return CFEqual(serverSecKey, pinnedSecKey);
+}
+
+static SecKeyRef
+create_security_key(const char *key)
+{
+  CFIndex length = strlen(key);
+  CFDataRef certificate = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)key, length);
+  
+  SecKeyRef allowedPublicKey = NULL;
+  SecCertificateRef allowedCertificate;
+  SecCertificateRef allowedCertificates[1];
+  CFArrayRef tempCertificates = NULL;
+  SecPolicyRef policy = NULL;
+  SecTrustRef allowedTrust = NULL;
+  
+  allowedCertificate = SecCertificateCreateWithData(NULL, certificate);
+  
+  if (allowedCertificate == NULL)
+    goto _out;
+  
+  allowedCertificates[0] = allowedCertificate;
+  tempCertificates = CFArrayCreate(NULL, (const void **)allowedCertificates, 1, NULL);
+  
+  policy = SecPolicyCreateBasicX509();
+  
+  if (SecTrustCreateWithCertificates(tempCertificates, policy, &allowedTrust) != noErr)
+    goto _out;
+  
+  if (SecTrustEvaluate(allowedTrust, NULL) != noErr)
+    goto _out;
+  
+  allowedPublicKey = SecTrustCopyPublicKey(allowedTrust);
+  
+_out:
+  if (allowedTrust)
+    CFRelease(allowedTrust);
+  
+  if (policy)
+    CFRelease(policy);
+  
+  if (tempCertificates)
+    CFRelease(tempCertificates);
+  
+  if (allowedCertificate)
+    CFRelease(allowedCertificate);
+  
+  if (certificate)
+    CFRelease(certificate);
+  
+  return allowedPublicKey;
+}
+
+static CURLcode
+pkp_pin_peer_pubkey(SSLContextRef SSLContext,
+                    const char *pinnedKey)
+{
+  if (!pinnedKey)
+    return CURLE_OK;
+  
+  CURLcode result = CURLE_SSL_PINNEDPUBKEYNOTMATCH;
+  
+  if (!SSLContext)
+    return result;
+  
+  SecTrustRef serverTrust = NULL;
+  OSStatus err = SSLCopyPeerTrust(SSLContext, &serverTrust);
+  
+  if (err == noErr && serverTrust) {
+    SecPolicyRef policy = SecPolicyCreateBasicX509();
+    SecKeyRef pinnedSecKey = create_security_key(pinnedKey);
+    CFIndex count = SecTrustGetCertificateCount(serverTrust);
+    
+    for (CFIndex i = 0L; i < count; i++) {
+      SecCertificateRef certificate = SecTrustGetCertificateAtIndex(serverTrust, i);
+      
+      SecCertificateRef certificatePtr[] = {certificate};
+      CFArrayRef certificateArr = CFArrayCreate(NULL, (const void **)certificatePtr, 1L, NULL);
+      
+      SecTrustRef currentTrust = NULL;
+      
+      if (SecTrustCreateWithCertificates(certificateArr, policy, &currentTrust) != noErr)
+        goto _out;
+      
+      if (SecTrustEvaluate(currentTrust, NULL) != noErr)
+        goto _out;
+      
+      SecKeyRef serverSecKey = SecTrustCopyPublicKey(currentTrust);
+      
+      if (serverSecKey && match_key_pair(serverSecKey, pinnedSecKey))
+        result = CURLE_OK;
+      
+_out:
+      if (certificateArr)
+        CFRelease(certificateArr);
+      
+      if (currentTrust)
+        CFRelease(currentTrust);
+      
+      if (serverSecKey)
+        CFRelease(serverSecKey);
+      
+      if (!result)
+        break;
+    }
+    
+    if (pinnedSecKey)
+      CFRelease(pinnedSecKey);
+    
+    CFRelease(serverTrust);
+  }
+  
+  return result;
+}
+
+static CURLcode
+servercert(struct connectdata *conn,
+				   struct ssl_connect_data *connssl)
+{
+	CURLcode result = CURLE_OK;
+	struct SessionHandle *data = conn->data;
+	const char *ptr = data->set.str[STRING_SSL_PINNEDPUBLICKEY];
+  
+	if (ptr) {
+    result = pkp_pin_peer_pubkey(connssl->ssl_ctx, ptr);
+	}
+  
+	return result;
+}
+
 static CURLcode
 darwinssl_connect_step3(struct connectdata *conn,
                         int sockindex)
 {
+  CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
   CFStringRef server_cert_summary;
@@ -2063,9 +2198,13 @@ darwinssl_connect_step3(struct connectdata *conn,
     CFRelease(server_certs);
   }
 #endif /* CURL_BUILD_MAC_10_7 || CURL_BUILD_IOS */
-
-  connssl->connecting_state = ssl_connect_done;
-  return CURLE_OK;
+  
+  result = servercert(conn, connssl);
+  
+  if (!result)
+    connssl->connecting_state = ssl_connect_done;
+  
+  return result;
 }
 
 static Curl_recv darwinssl_recv;
