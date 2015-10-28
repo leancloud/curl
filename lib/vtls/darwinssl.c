@@ -1954,14 +1954,28 @@ static bool
 match_key_pair(SecKeyRef serverSecKey,
                SecKeyRef pinnedSecKey)
 {
-  return CFEqual(serverSecKey, pinnedSecKey);
+  bool result = FALSE;
+  
+  if (serverSecKey && pinnedSecKey)
+    result = CFEqual(serverSecKey, pinnedSecKey);
+  
+  return result;
 }
 
 static SecKeyRef
 create_security_key(const char *key)
 {
+  size_t bufsize = 0;
+  unsigned char *buf = NULL;
+  CURLcode code = Curl_base64_decode(key, &buf, &bufsize);
+  
+  if (code || !buf || !bufsize)
+    return NULL;
+  
   CFIndex length = strlen(key);
-  CFDataRef certificate = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)key, length);
+  CFDataRef certificate = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)buf, bufsize);
+  
+  free(buf);
   
   SecKeyRef allowedPublicKey = NULL;
   SecCertificateRef allowedCertificate;
