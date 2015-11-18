@@ -43,6 +43,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CommonCrypto/CommonDigest.h>
 
+#include <openssl/x509.h>
+
 /* The Security framework has changed greatly between iOS and different OS X
    versions, and we will try to support as many of them as we can (back to
    Leopard and iOS 5) by using macros and weak-linking.
@@ -2021,6 +2023,64 @@ _out:
   return allowedPublicKey;
 }
 
+static unsigned char *
+cert_issuer_name(X509 *certX509)
+{
+  if (certX509) {
+    X509_NAME *issuerX509Name = X509_get_issuer_name(certX509);
+    
+    if (issuerX509Name) {
+      int nid = OBJ_txt2nid("O");
+      int index = X509_NAME_get_index_by_NID(issuerX509Name, nid, -1);
+      
+      X509_NAME_ENTRY *issuerNameEntry = X509_NAME_get_entry(issuerX509Name, index);
+      
+      if (issuerNameEntry) {
+        ASN1_STRING *issuerNameASN1 = X509_NAME_ENTRY_get_data(issuerNameEntry);
+        
+        if (issuerNameASN1) {
+          return ASN1_STRING_data(issuerNameASN1);
+        }
+      }
+    }
+  }
+  
+  return NULL;
+}
+
+static void
+inspect_cert(SecCertificateRef cert)
+{
+  if (!cert)
+    return;
+  
+  CFDataRef data = SecCertificateCopyData(cert);
+  
+  if (data) {
+    CFIndex size = CFDataGetLength(data);
+    
+    if (size) {
+      unsigned char *bytes = CFAllocatorAllocate(NULL, size, 0);
+      
+      if (bytes) {
+        CFDataGetBytes(data, CFRangeMake(0, size), bytes);
+        X509 *certX509 = d2i_X509(NULL, &bytes, size);
+        
+        if (certX509) {
+          unsigned char *name = cert_issuer_name(certX509);
+          
+          if (name)
+            fprintf(stdout, "Certificate issuer name: %s\n", name);
+        }
+        
+        CFRelease(bytes);
+      }
+    }
+    
+    CFRelease(data);
+  }
+}
+
 static CURLcode
 pkp_pin_peer_pubkey(SSLContextRef SSLContext,
                     const char *pinnedKey)
@@ -2043,6 +2103,9 @@ pkp_pin_peer_pubkey(SSLContextRef SSLContext,
     
     for (CFIndex i = 0L; i < count; i++) {
       SecCertificateRef certificate = SecTrustGetCertificateAtIndex(serverTrust, i);
+      
+      if (getenv("CURL_INSPECT_CERT"))
+          inspect_cert(certificate);
       
       SecCertificateRef certificatePtr[] = {certificate};
       CFArrayRef certificateArr = CFArrayCreate(NULL, (const void **)certificatePtr, 1L, NULL);
