@@ -2085,17 +2085,17 @@ _out:
 
 static CURLcode
 servercert(struct connectdata *conn,
-				   struct ssl_connect_data *connssl)
+           struct ssl_connect_data *connssl)
 {
-	CURLcode result = CURLE_OK;
-	struct SessionHandle *data = conn->data;
-	const char *ptr = data->set.str[STRING_SSL_PINNEDPUBLICKEY];
+  CURLcode result = CURLE_OK;
+  struct SessionHandle *data = conn->data;
+  const char *ptr = data->set.str[STRING_SSL_PINNEDPUBLICKEY];
   
-	if (ptr) {
+  if (ptr) {
     result = pkp_pin_peer_pubkey(connssl->ssl_ctx, ptr);
-	}
+  }
   
-	return result;
+  return result;
 }
 
 static CURLcode
