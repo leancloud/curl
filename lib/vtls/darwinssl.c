@@ -2060,7 +2060,7 @@ inspect_cert(SecCertificateRef cert)
     CFIndex size = CFDataGetLength(data);
     
     if (size) {
-      unsigned char *bytes = CFAllocatorAllocate(NULL, size, 0);
+      unsigned char *bytes = CFAllocatorAllocate(kCFAllocatorDefault, size, 0);
       
       if (bytes) {
         CFDataGetBytes(data, CFRangeMake(0, size), bytes);
@@ -2073,7 +2073,7 @@ inspect_cert(SecCertificateRef cert)
             fprintf(stdout, "Certificate issuer name: %s\n", name);
         }
         
-        CFRelease(bytes);
+        CFAllocatorDeallocate(kCFAllocatorDefault, bytes);
       }
     }
     
