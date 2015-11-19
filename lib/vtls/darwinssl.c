@@ -44,6 +44,9 @@
 #include <CommonCrypto/CommonDigest.h>
 
 #include <openssl/x509.h>
+#include <openssl/bio.h>
+#include <openssl/asn1.h>
+#include <openssl/bn.h>
 
 /* The Security framework has changed greatly between iOS and different OS X
    versions, and we will try to support as many of them as we can (back to
@@ -2024,60 +2027,114 @@ _out:
 }
 
 static unsigned char *
-cert_issuer_name(X509 *certX509)
+create_cert_buffer(SecCertificateRef *cert, size_t *size)
 {
-  if (certX509) {
-    X509_NAME *issuerX509Name = X509_get_issuer_name(certX509);
-    
-    if (issuerX509Name) {
-      int nid = OBJ_txt2nid("O");
-      int index = X509_NAME_get_index_by_NID(issuerX509Name, nid, -1);
-      
-      X509_NAME_ENTRY *issuerNameEntry = X509_NAME_get_entry(issuerX509Name, index);
-      
-      if (issuerNameEntry) {
-        ASN1_STRING *issuerNameASN1 = X509_NAME_ENTRY_get_data(issuerNameEntry);
-        
-        if (issuerNameASN1) {
-          return ASN1_STRING_data(issuerNameASN1);
-        }
+  size_t bufsize = 0;
+  CFDataRef data = NULL;
+  unsigned char *buf = NULL;
+  
+  if (cert) {
+    data = SecCertificateCopyData(cert);
+    if (data) {
+      bufsize = (size_t)CFDataGetLength(data);
+      if (bufsize) {
+        buf = malloc(bufsize);
+        if (buf)
+          CFDataGetBytes(data, CFRangeMake(0, bufsize), buf);
       }
+      CFRelease(data);
     }
   }
   
-  return NULL;
+  if (size)
+    *size = bufsize;
+  
+  return buf;
+}
+
+static void
+print_x509_cert_digest(BIO *bio, X509 *certX509)
+{
+  BIGNUM *serial = ASN1_INTEGER_to_BN(X509_get_serialNumber(certX509), NULL);
+  
+  if (serial) {
+    char *hex = BN_bn2hex(serial);
+    if (hex) {
+      BIO_puts(bio, "Serial Number:\n");
+      BIO_printf(bio, "%s\n\n", hex);
+      OPENSSL_free(hex);
+    }
+    BN_free(serial);
+  }
+  
+  X509_NAME *issuer = X509_get_issuer_name(certX509);
+  BIO_puts(bio, "Certificate Issuer:\n");
+  X509_NAME_print(bio, issuer, 0);
+  BIO_puts(bio, "\n\n");
+  
+  X509_NAME *subject = X509_get_subject_name(certX509);
+  BIO_puts(bio, "Certificate Subject:\n");
+  X509_NAME_print(bio, subject, 0);
+}
+
+void NSLog(CFStringRef format, ...);
+
+static void
+log_data(char *data) {
+  NSLog(CFSTR("%s"), data);
+}
+
+static void
+print_x509_cert(X509 *certX509)
+{
+  if (!certX509)
+    return;
+  
+  BIO *outbio = BIO_new(BIO_s_mem());
+  
+  if (!outbio)
+    return;
+  
+  BIO_puts(outbio, "\n");
+  BIO_puts(outbio, "------ BEGIN Certificate ------");
+  BIO_puts(outbio, "\n");
+  
+  if (getenv("CURL_INSPECT_CERT_VERBOSE")) {
+    X509_print(outbio, certX509);
+  } else {
+    print_x509_cert_digest(outbio, certX509);
+  }
+  
+  BIO_puts(outbio, "\n");
+  BIO_puts(outbio, "------ END --------------------");
+  BIO_puts(outbio, "\n");
+  BIO_write(outbio, "\0", 1);
+  
+  long size = 0;
+  char *data = NULL;
+  
+  if ((size = BIO_get_mem_data(outbio, &data)))
+    log_data(data);
+  
+  BIO_free(outbio);
 }
 
 static void
 inspect_cert(SecCertificateRef cert)
 {
-  if (!cert)
-    return;
+  size_t size = 0;
+  unsigned char *buf = create_cert_buffer(cert, &size);
   
-  CFDataRef data = SecCertificateCopyData(cert);
-  
-  if (data) {
-    CFIndex size = CFDataGetLength(data);
+  if (buf) {
+    X509 *certX509 = NULL;
+    unsigned char *p = buf;
     
-    if (size) {
-      unsigned char *bytes = CFAllocatorAllocate(kCFAllocatorDefault, size, 0);
-      
-      if (bytes) {
-        CFDataGetBytes(data, CFRangeMake(0, size), bytes);
-        X509 *certX509 = d2i_X509(NULL, &bytes, size);
-        
-        if (certX509) {
-          unsigned char *name = cert_issuer_name(certX509);
-          
-          if (name)
-            fprintf(stdout, "Certificate issuer name: %s\n", name);
-        }
-        
-        CFAllocatorDeallocate(kCFAllocatorDefault, bytes);
-      }
+    if (d2i_X509(&certX509, &p, size)) {
+      print_x509_cert(certX509);
+      X509_free(certX509);
     }
     
-    CFRelease(data);
+    free(buf);
   }
 }
 
